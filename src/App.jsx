@@ -67,7 +67,7 @@ import {
 } from '@react-three/postprocessing'
 import { BlendFunction, ToneMappingMode, GlitchMode } from 'postprocessing'
 import { Physics, RigidBody, BallCollider, CylinderCollider } from '@react-three/rapier'
-import { useControls, folder, button } from 'leva'
+import { useControls, folder, button, Leva } from 'leva'
 import gsap from 'gsap'
 
 import FallingField from './FallingField.jsx'
@@ -828,6 +828,9 @@ export default function App() {
         overscrollBehavior: 'none',
       }}
     >
+      {/* mount Leva but force it hidden — required to suppress leva's
+         default auto-mounted panel that appears whenever useControls is used */}
+      <Leva hidden />
 
       <ErrorBoundary>
       <Canvas
