@@ -1,7 +1,7 @@
 import React, { Suspense, useMemo, useRef, useState, useEffect } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { useGLTF, Environment, OrbitControls, ContactShadows, Center, Loader } from '@react-three/drei'
+import { useGLTF, Environment, OrbitControls, ContactShadows, Center, useProgress } from '@react-three/drei'
 
 /* error boundary so a runtime error (postprocessing, rapier, gltf) doesn't
    silently blank the page — shows the message + lets you continue. */
@@ -67,7 +67,7 @@ import {
 } from '@react-three/postprocessing'
 import { BlendFunction, ToneMappingMode, GlitchMode } from 'postprocessing'
 import { Physics, RigidBody, BallCollider, CylinderCollider } from '@react-three/rapier'
-import { useControls, folder, button, Leva } from 'leva'
+import { useControls, folder, button } from 'leva'
 import gsap from 'gsap'
 
 import FallingField from './FallingField.jsx'
@@ -82,7 +82,7 @@ useGLTF.preload('/models/peko-neko.glb')
    Hero rig — kinematic body w/ trimesh collider + tilt/idle bob
    + pointer handlers for long-press FX.
    ============================================================ */
-function HeroRig({ hero, pressFx, pressState, onPress }) {
+function HeroRig({ hero, pressFx, pressState, onPress, playIntro }) {
   const rbRef = useRef(null)
   const { mouse } = useThree()
   const { scene } = useGLTF('/models/peko-neko.glb')
@@ -90,10 +90,12 @@ function HeroRig({ hero, pressFx, pressState, onPress }) {
   const tilt = useRef({ x: 0, y: 0 })
   const _e = useRef(new THREE.Euler())
   const _q = useRef(new THREE.Quaternion())
-  /* intro drop-in: y goes from +6 to 0 in 1.5s circ.out on mount */
+  /* intro drop-in stays at +6 (offscreen) until `playIntro` flips true,
+     then animates to 0 in 1.5s circ.out. */
   const intro = useRef({ y: 6 })
 
   useEffect(() => {
+    if (!playIntro) return
     intro.current.y = 6
     const tw = gsap.to(intro.current, {
       y: 0,
@@ -102,7 +104,7 @@ function HeroRig({ hero, pressFx, pressState, onPress }) {
       overwrite: true,
     })
     return () => tw.kill()
-  }, [])
+  }, [playIntro])
 
   useFrame((state, dt) => {
     if (!rbRef.current) return
@@ -768,26 +770,28 @@ export default function App() {
         ease: pressed ? 'circ.in' : 'circ.out',
         overwrite: true,
       })
-      console.log(`[press] ${pressed ? 'DOWN' : 'UP'} t→${pressed ? 1 : 0} dur=${(pressed ? cfg.durationIn : cfg.durationOut).toFixed(2)}s`)
     },
     []
   )
 
-  /* visible debug indicator — DOM bar driven by rAF reading pressState
-     (lets you see at a glance that pointer events ARE firing). */
-  const debugBarRef = useRef(null)
+  /* truthful loading gate — uses drei's useProgress to know when ALL
+     useLoader/useGLTF assets have actually resolved + first paint settled. */
+  const { progress, active } = useProgress()
+  const [overlayHidden, setOverlayHidden] = useState(false)
+  const [playIntro, setPlayIntro] = useState(false)
+
   useEffect(() => {
-    let raf
-    const loop = () => {
-      if (debugBarRef.current) {
-        const t = pressState.current.progress.t
-        debugBarRef.current.style.transform = `scaleX(${t.toFixed(3)})`
-      }
-      raf = requestAnimationFrame(loop)
+    if (active || progress < 100) return
+    /* small grace period so the GLB has reached the GPU + first frame painted */
+    const tFade = setTimeout(() => setOverlayHidden(true), 250)
+    /* start the intro AFTER the overlay starts fading so the user sees
+       the cat drop from above against the now-visible scene */
+    const tIntro = setTimeout(() => setPlayIntro(true), 750)
+    return () => {
+      clearTimeout(tFade)
+      clearTimeout(tIntro)
     }
-    raf = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(raf)
-  }, [])
+  }, [active, progress])
 
   /* global pointer-up so release fires even if user drags off the cat */
   useEffect(() => {
@@ -802,21 +806,6 @@ export default function App() {
     }
   }, [triggerPress])
 
-  /* control panel: visible by default; press C anywhere to toggle */
-  const [panelHidden, setPanelHidden] = useState(false)
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.repeat) return
-      const tag = e.target?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return
-      if (e.code === 'KeyC' || e.key === 'c' || e.key === 'C') {
-        e.preventDefault()
-        setPanelHidden((h) => !h)
-      }
-    }
-    document.addEventListener('keydown', onKey, true) /* capture phase */
-    return () => document.removeEventListener('keydown', onKey, true)
-  }, [])
 
   const azR = THREE.MathUtils.degToRad(orbit.azimuthRangeDeg)
   const polUp = THREE.MathUtils.degToRad(orbit.polarRangeUpDeg)
@@ -827,8 +816,18 @@ export default function App() {
     : scene.bg
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: wrapperBg }}>
-      <Leva hidden={panelHidden} collapsed titleBar={{ title: 'Peko Neko · press C to toggle' }} />
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: wrapperBg,
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+        WebkitTapHighlightColor: 'transparent',
+        overscrollBehavior: 'none',
+      }}
+    >
 
       <ErrorBoundary>
       <Canvas
@@ -868,7 +867,7 @@ export default function App() {
             paused={!physics.enabled}
             timeStep="vary"
           >
-            <HeroRig hero={hero} pressFx={pressFx} pressState={pressState} onPress={triggerPress} />
+            <HeroRig hero={hero} pressFx={pressFx} pressState={pressState} onPress={triggerPress} playIntro={playIntro} />
 
             {eggs.enabled && (
               <FallingField
@@ -972,70 +971,37 @@ export default function App() {
         onClick={() => window.open('https://pekoneko.superbexperience.com/reserve/guests', '_blank', 'noopener,noreferrer')}
       />
 
-      {/* loading overlay during GLB fetch (drei) */}
-      <Loader
-        containerStyles={{ background: '#000' }}
-        innerStyles={{ background: 'transparent' }}
-        barStyles={{ background: '#ffffff', height: 2 }}
-        dataStyles={{ color: '#ffffff', fontSize: 11, letterSpacing: '0.2em', fontFamily: 'monospace' }}
-        dataInterpolation={(p) => `LOADING ${p.toFixed(0)}%`}
-      />
-
-      {/* press-progress debug bar — top-left.
-         If this bar fills when you click the cat → pointer events work.
-         If it doesn't move → events don't reach the handler. */}
+      {/* truthful loading overlay — opaque solid bg, real progress %.
+         Stays up until ALL drei loaders resolve + a 250ms grace period,
+         then fades 700ms. Pointer events stay locked while visible so
+         tap-during-load can't desync the press FX. */}
       <div
+        aria-hidden={overlayHidden}
         style={{
           position: 'fixed',
-          top: 16,
-          left: 16,
-          width: 120,
-          height: 4,
-          background: 'rgba(255,255,255,0.1)',
-          borderRadius: 2,
-          overflow: 'hidden',
-          zIndex: 100,
-          pointerEvents: 'none',
+          inset: 0,
+          background: scene.bg,
+          opacity: overlayHidden ? 0 : 1,
+          pointerEvents: overlayHidden ? 'none' : 'auto',
+          transition: 'opacity 700ms cubic-bezier(0.4, 0, 0.2, 1)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 99,
         }}
       >
         <div
-          ref={debugBarRef}
           style={{
-            width: '100%',
-            height: '100%',
-            background: '#ff6ef0',
-            transformOrigin: 'left center',
-            transform: 'scaleX(0)',
-            willChange: 'transform',
-          }}
-        />
-      </div>
-
-      {/* mini hint when panel is hidden */}
-      {panelHidden && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 16,
-            right: 16,
-            padding: '8px 12px',
-            borderRadius: 999,
-            fontSize: 11,
-            fontFamily: 'monospace',
-            letterSpacing: '0.1em',
             color: 'rgba(255,255,255,0.7)',
-            background: 'rgba(0,0,0,0.45)',
-            border: '1px solid rgba(255,255,255,0.12)',
-            pointerEvents: 'none',
-            userSelect: 'none',
-            zIndex: 10,
-            backdropFilter: 'blur(8px)',
-            WebkitBackdropFilter: 'blur(8px)',
+            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+            fontSize: 12,
+            letterSpacing: '0.32em',
+            textTransform: 'uppercase',
           }}
         >
-          PRESS [ C ] FOR CONTROLS
+          {`Peko Neko · ${Math.round(progress)}%`}
         </div>
-      )}
+      </div>
     </div>
   )
 }
